@@ -2,19 +2,29 @@
 """
 config.py — الإعدادات المركزية للبوت
 =================================================
-الغرض: سحب كل الأسرار والإعدادات من الكود وتحميلها من متغيرات البيئة
-(ملف .env) حتى لا يتسرب أي توكن أو رقم دفع مع الكود.
+البوت كله محتاج سِرّين (Secrets) بس — مفيش غيرهم:
 
-طريقة الاستخدام:
-    1) انسخ .env.example إلى .env
-    2) ضع القيم الحقيقية في .env
-    3) لا ترفع ملف .env أبداً إلى Git أو أرسله لأي شخص
+    BOT_TOKEN   ← توكن البوت من @BotFather
+    ADMIN_IDS   ← أرقام تليجرام الأدمن (واحد أو أكتر، مفصولة بفواصل)
 
-تنبيه أمني مهم:
-    توكنات البوتين القديمة كانت مكتوبة في الكود ومكشوفة →
-    اعتبرهما مسربتين ويجب إعادة توليدهما من @BotFather قبل التشغيل.
+على Streamlit Cloud حطّهم في تبويب Secrets بالشكل ده:
+
+    BOT_TOKEN = "123456789:AA...."
+    ADMIN_IDS = "111111111, 222222222"
+
+على جهازك: انسخ .env.example إلى .env واملأ نفس القيمتين.
+
+ملاحظات:
+    * البوت بقى بوت واحد (مستخدمين + لوحة تحكم في نفس البوت)، فاللي بيحدد
+      الأدمن هو ADMIN_IDS مش بوت تاني.
+    * أول رقم في ADMIN_IDS = المطور الأساسي (DEV_ID)، والباقي أدمن بنفس الصلاحيات.
+    * مفتاح تشفير كلمات المرور (VAULT_KEY) بقى بيتشتق تلقائياً من BOT_TOKEN،
+      يعني مش محتاج تضيفه في الـ Secrets. لو حبيت مفتاح مستقل، ضيف VAULT_KEY
+      وهو هيتقدّم على المفتاح المشتق.
 """
 
+import base64
+import hashlib
 import os
 
 
@@ -34,7 +44,7 @@ def _load_dotenv(path: str = ".env") -> None:
 _load_dotenv()
 
 
-def _st_secret(name: str) -> str:
+def _st_secret(name: str):
     """
     لو شغالين جوا ستريمليت (زي Streamlit Cloud)، اقرأ القيمة من st.secrets
     كمان — احتياطياً لو الـ Secrets مش ظاهرة كمتغيرات بيئة.
@@ -43,33 +53,101 @@ def _st_secret(name: str) -> str:
         import streamlit as st  # noqa: F401
         val = st.secrets.get(name)
         if val is not None:
-            return str(val)
+            return val
     except Exception:
         pass
-    return ""
+    return None
 
 
-def _get(name: str, default: str = "") -> str:
-    """متغير بيئة أولاً، ثم Secrets ستريمليت، ثم القيمة الافتراضية"""
+def _raw(name: str, *fallbacks: str):
+    """
+    متغير بيئة أولاً، ثم Secrets ستريمليت، ثم أسماء قديمة (لو موجودة) —
+    عشان الإعدادات القديمة ماتكسرش.
+    """
     val = os.getenv(name)
     if val is not None and val != "":
         return val
     val = _st_secret(name)
-    return val if val else default
+    if val is not None and val != "":
+        return val
+    for alt in fallbacks:
+        val = os.getenv(alt)
+        if val is not None and val != "":
+            return val
+        val = _st_secret(alt)
+        if val is not None and val != "":
+            return val
+    return None
 
 
-# ==================== توكنات البوت (سرية - من .env / Secrets) ====================
-USER_BOT_TOKEN = _get("USER_BOT_TOKEN", "")      # توكن بوت المستخدمين
-ADMIN_BOT_TOKEN = _get("ADMIN_BOT_TOKEN", "")    # توكن بوت لوحة التحكم
+def _get(name: str, default: str = "", *fallbacks: str) -> str:
+    """نفس _raw لكن بيرجّع نص دايماً (القوائم بتتحول لنص مفصول بفواصل)"""
+    val = _raw(name, *fallbacks)
+    if val is None:
+        return default
+    if isinstance(val, (list, tuple, set)):
+        return ", ".join(str(v) for v in val)
+    return str(val)
 
-# ==================== هويات الإدارة ====================
-DEV_ID = int(_get("DEV_ID", "0") or 0)                    # ID المطور
-ASSISTANT_ADMIN_ID = int(_get("ASSISTANT_ADMIN_ID", "0") or 0)  # ID مساعد الإدارة
-DEV_USERNAME = _get("DEV_USERNAME", "@B_R_S_H_M")    # يوزر المطور (بدون @ في الرسائل)
 
-# ==================== نظام الاشتراك المدفوع ====================
-SUBSCRIPTION_PRICE = int(_get("SUBSCRIPTION_PRICE", "250") or 250)      # السعر بالجنيه شهرياً
-VODAFONE_CASH_NUMBER = _get("VODAFONE_CASH_NUMBER", "")          # رقم الاستقبال
+def _parse_ids(value: str) -> list:
+    """
+    تحويل نص الأرقام لنصوص أرقام صحيحة.
+    بيقبل الفواصل والمسافات والأسطر الجديدة:  "111, 222 333\n444"
+    """
+    ids = []
+    for chunk in (value or "").replace(";", ",").replace("\n", ",").replace(" ", ",").split(","):
+        chunk = chunk.strip()
+        if chunk.lstrip("-").isdigit():
+            num = int(chunk)
+            if num != 0 and num not in ids:
+                ids.append(num)
+    return ids
+
+
+# ==================== 1) توكن البوت (السِرّ الوحيد الإجباري) ====================
+# BOT_TOKEN هو الاسم الأساسي. الأسماء القديمة (USER_BOT_TOKEN / ADMIN_BOT_TOKEN)
+# بتشتغل كخطة بديلة لو لسه موجودة عندك.
+BOT_TOKEN = _get("BOT_TOKEN", "", "USER_BOT_TOKEN", "TELEGRAM_BOT_TOKEN")
+
+# ==================== 2) هويات الإدارة (السِرّ التاني الإجباري) ====================
+ADMIN_IDS = _parse_ids(_get("ADMIN_IDS", "", "DEV_ID"))
+
+# أسماء قديمة لسه مستخدمة جوا الكود — بتتشتق من ADMIN_IDS أوتوماتيك:
+DEV_ID = ADMIN_IDS[0] if ADMIN_IDS else 0                      # المطور الأساسي
+ASSISTANT_ADMIN_ID = ADMIN_IDS[1] if len(ADMIN_IDS) > 1 else 0  # أول مساعد
+ADMINS = set(ADMIN_IDS)                                        # كل الأدمن (مجموعة)
+
+# يوزر المطور للعرض فقط (مش سِر) — يتغيّر من .env لو حبيت
+DEV_USERNAME = _get("DEV_USERNAME", "@B_R_S_H_M")
+
+
+# ==================== مفتاح التشفير (مشتق من BOT_TOKEN) ====================
+def _derive_vault_key(bot_token: str) -> str:
+    """
+    توليد مفتاح Fernet صحيح من توكن البوت نفسه (SHA-256 → 32 بايت → base64url).
+    ثابت لكل توكن، يعني كلمات المرور المحفوظة تفضل تفك بعد إعادة التشغيل.
+    ⚠️ لو عملت Revoke للتوكن من @BotFather، المفتاح هيتغير وكلمات المرور
+       المحفوظة هتتنسى (البوت بيتعامل معاها كأنها مش محفوظة — مفيش خطأ).
+    """
+    digest = hashlib.sha256(
+        ("vodafone-bot::vault-v1::" + (bot_token or "")).encode("utf-8")
+    ).digest()
+    return base64.urlsafe_b64encode(digest).decode("ascii")
+
+
+_vault_key_explicit = _get("VAULT_KEY", "")
+if _vault_key_explicit:
+    VAULT_KEY = _vault_key_explicit
+    VAULT_KEY_SOURCE = "VAULT_KEY من الـ Secrets/.env"
+else:
+    VAULT_KEY = _derive_vault_key(BOT_TOKEN)
+    VAULT_KEY_SOURCE = "مشتق تلقائياً من BOT_TOKEN"
+
+
+# ==================== نظام الاشتراك المدفوع (اختياري) ====================
+SUBSCRIPTION_PRICE = int(_get("SUBSCRIPTION_PRICE", "250") or 250)   # السعر بالجنيه شهرياً
+VODAFONE_CASH_NUMBER = _get("VODAFONE_CASH_NUMBER", "")              # رقم الاستقبال
 SUBSCRIPTION_ENABLED = _get("SUBSCRIPTION_ENABLED", "True").lower() == "true"
 
 # ==================== القنوات المطلوب الاشتراك فيها ====================
@@ -78,21 +156,15 @@ CHANNELS = [
     {"name": "BRSHAMHFLEX15", "link": "https://t.me/BRSHAMHFLEX15", "chat_id": "@BRSHAMHFLEX15"},
 ]
 
-# ==================== قاعدة البيانات ====================
+# ==================== قاعدة البيانات (اختياري) ====================
 DB_FILE = _get("DB_FILE", "spartan_new.db")
 DELETE_OLD_DB_ON_START = _get("DELETE_OLD_DB_ON_START", "False").lower() == "true"
-
-# ==================== مفاتيح الأمان ====================
-# مفتاح Fernet لتشفير كلمات المرور المحفوظة (لا يعمل بدون cryptography)
-# توليده: python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
-VAULT_KEY = _get("VAULT_KEY", "")
 
 # ملف سجل العمليات الحساسة
 AUDIT_LOG_FILE = _get("AUDIT_LOG_FILE", "audit.log")
 
 # ==================== بيانات عميل تطبيق فودافون ====================
-# ⚠️ هذه بيانات عميل التطبيق الرسمي لـ "أنا فودافون" والمطلوبة لمطابقة الـ API.
-# معروفة من داخل التطبيق وليست سرية خاصة بك، لكن نتركها في .env لتسهيل التغيير.
+# ⚠️ بيانات عميل التطبيق الرسمي لـ "أنا فودافون" والمطلوبة لمطابقة الـ API.
 VODA_CLIENT_ID = _get("VODA_CLIENT_ID", "ana-vodafone-app")
 VODA_CLIENT_SECRET = _get("VODA_CLIENT_SECRET", "")
 
@@ -101,35 +173,37 @@ def validate_config() -> None:
     """
     فحص فوري عند الإقلاع: لو في إعداد حرج ناقص → إيقاف البوت برسالة واضحة
     بدل ما يشتغل بدون حماية (مبدأ Fail-Fast).
+    المطلوب دلوقتي سِرّين بس: BOT_TOKEN و ADMIN_IDS.
     """
     missing = []
-    if not USER_BOT_TOKEN:
-        missing.append("USER_BOT_TOKEN")
-    if not ADMIN_BOT_TOKEN:
-        missing.append("ADMIN_BOT_TOKEN")
-    if not VAULT_KEY:
-        missing.append("VAULT_KEY")
-    else:
+    if not BOT_TOKEN:
+        missing.append("BOT_TOKEN")
+    if not ADMIN_IDS:
+        missing.append("ADMIN_IDS")
+
+    if BOT_TOKEN and VAULT_KEY:
         # [SECURITY] التأكد إن مفتاح التشفير صالح فعلاً (Fernet)
         try:
             from cryptography.fernet import Fernet
         except ImportError:
-            Fernet = None  # المكتبة هتتسطب من requirements.txt — الفحص يتم وقتها
+            Fernet = None  # المكتبة هتتسطب من requirements.txt — الفحص يتمها
         if Fernet is not None:
             try:
                 Fernet(VAULT_KEY.encode("utf-8"))
             except Exception:
                 raise SystemExit(
                     "❌ مفتاح التشفير VAULT_KEY غير صالح!\n"
-                    "لازم يكون مفتاح Fernet صحيح. ولّد واحد جديد بالأمر:\n"
+                    "سيب VAULT_KEY فاضي وسيب البوت يشتقه من BOT_TOKEN، أو ولّد واحد جديد:\n"
                     "python -c \"from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())\""
                 )
-    if DEV_ID == 0:
-        missing.append("DEV_ID")
+
     if missing:
         raise SystemExit(
-            "❌ إعدادات حرجة ناقصة: " + ", ".join(missing) + "\n"
-            "على Streamlit Cloud: افتح التطبيق ← تبويب Secrets وأضف المتغيرات الناقصة بنفس "
+            "❌ إعدادات حرجة ناقصة: " + ", ".join(missing) + "\n\n"
+            "البوت محتاج سِرّين بس:\n"
+            "  BOT_TOKEN  = توكن البوت من @BotFather\n"
+            "  ADMIN_IDS  = أرقام تليجرام الأدمن (مثال: 111111111, 222222222)\n\n"
+            "على Streamlit Cloud: افتح التطبيق ← تبويب Secrets وأضف الاتنين بنفس "
             "الأسماء ثم اعمل Restart للتطبيق.\n"
-            "على جهازك: انسخ .env.example إلى .env واملأ القيم ثم شغّل البوت مجدداً."
+            "على جهازك: انسخ .env.example إلى .env واملأ القيمتين ثم شغّل البوت مجدداً."
         )
