@@ -1,0 +1,14 @@
+# أسرار وإعدادات — ممنوع تتأرشف أو تترفع
+.env
+.streamlit/secrets.toml
+
+# قاعدة البيانات والسجلات
+*.db
+*.log
+audit.log
+bot.log
+
+# بايثون
+__pycache__/
+*.pyc
+.venv/
