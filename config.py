@@ -34,19 +34,43 @@ def _load_dotenv(path: str = ".env") -> None:
 _load_dotenv()
 
 
-# ==================== توكنات البوت (سرية - من .env) ====================
-USER_BOT_TOKEN = os.getenv("USER_BOT_TOKEN", "")      # توكن بوت المستخدمين
-ADMIN_BOT_TOKEN = os.getenv("ADMIN_BOT_TOKEN", "")    # توكن بوت لوحة التحكم
+def _st_secret(name: str) -> str:
+    """
+    لو شغالين جوا ستريمليت (زي Streamlit Cloud)، اقرأ القيمة من st.secrets
+    كمان — احتياطياً لو الـ Secrets مش ظاهرة كمتغيرات بيئة.
+    """
+    try:
+        import streamlit as st  # noqa: F401
+        val = st.secrets.get(name)
+        if val is not None:
+            return str(val)
+    except Exception:
+        pass
+    return ""
+
+
+def _get(name: str, default: str = "") -> str:
+    """متغير بيئة أولاً، ثم Secrets ستريمليت، ثم القيمة الافتراضية"""
+    val = os.getenv(name)
+    if val is not None and val != "":
+        return val
+    val = _st_secret(name)
+    return val if val else default
+
+
+# ==================== توكنات البوت (سرية - من .env / Secrets) ====================
+USER_BOT_TOKEN = _get("USER_BOT_TOKEN", "")      # توكن بوت المستخدمين
+ADMIN_BOT_TOKEN = _get("ADMIN_BOT_TOKEN", "")    # توكن بوت لوحة التحكم
 
 # ==================== هويات الإدارة ====================
-DEV_ID = int(os.getenv("DEV_ID", "0"))                    # ID المطور
-ASSISTANT_ADMIN_ID = int(os.getenv("ASSISTANT_ADMIN_ID", "0"))  # ID مساعد الإدارة
-DEV_USERNAME = os.getenv("DEV_USERNAME", "@B_R_S_H_M")    # يوزر المطور (بدون @ في الرسائل)
+DEV_ID = int(_get("DEV_ID", "0") or 0)                    # ID المطور
+ASSISTANT_ADMIN_ID = int(_get("ASSISTANT_ADMIN_ID", "0") or 0)  # ID مساعد الإدارة
+DEV_USERNAME = _get("DEV_USERNAME", "@B_R_S_H_M")    # يوزر المطور (بدون @ في الرسائل)
 
 # ==================== نظام الاشتراك المدفوع ====================
-SUBSCRIPTION_PRICE = int(os.getenv("SUBSCRIPTION_PRICE", "250"))      # السعر بالجنيه شهرياً
-VODAFONE_CASH_NUMBER = os.getenv("VODAFONE_CASH_NUMBER", "")          # رقم الاستقبال
-SUBSCRIPTION_ENABLED = os.getenv("SUBSCRIPTION_ENABLED", "True").lower() == "true"
+SUBSCRIPTION_PRICE = int(_get("SUBSCRIPTION_PRICE", "250") or 250)      # السعر بالجنيه شهرياً
+VODAFONE_CASH_NUMBER = _get("VODAFONE_CASH_NUMBER", "")          # رقم الاستقبال
+SUBSCRIPTION_ENABLED = _get("SUBSCRIPTION_ENABLED", "True").lower() == "true"
 
 # ==================== القنوات المطلوب الاشتراك فيها ====================
 CHANNELS = [
@@ -55,22 +79,22 @@ CHANNELS = [
 ]
 
 # ==================== قاعدة البيانات ====================
-DB_FILE = os.getenv("DB_FILE", "spartan_new.db")
-DELETE_OLD_DB_ON_START = os.getenv("DELETE_OLD_DB_ON_START", "False").lower() == "true"
+DB_FILE = _get("DB_FILE", "spartan_new.db")
+DELETE_OLD_DB_ON_START = _get("DELETE_OLD_DB_ON_START", "False").lower() == "true"
 
 # ==================== مفاتيح الأمان ====================
 # مفتاح Fernet لتشفير كلمات المرور المحفوظة (لا يعمل بدون cryptography)
 # توليده: python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
-VAULT_KEY = os.getenv("VAULT_KEY", "")
+VAULT_KEY = _get("VAULT_KEY", "")
 
 # ملف سجل العمليات الحساسة
-AUDIT_LOG_FILE = os.getenv("AUDIT_LOG_FILE", "audit.log")
+AUDIT_LOG_FILE = _get("AUDIT_LOG_FILE", "audit.log")
 
 # ==================== بيانات عميل تطبيق فودافون ====================
 # ⚠️ هذه بيانات عميل التطبيق الرسمي لـ "أنا فودافون" والمطلوبة لمطابقة الـ API.
 # معروفة من داخل التطبيق وليست سرية خاصة بك، لكن نتركها في .env لتسهيل التغيير.
-VODA_CLIENT_ID = os.getenv("VODA_CLIENT_ID", "ana-vodafone-app")
-VODA_CLIENT_SECRET = os.getenv("VODA_CLIENT_SECRET", "")
+VODA_CLIENT_ID = _get("VODA_CLIENT_ID", "ana-vodafone-app")
+VODA_CLIENT_SECRET = _get("VODA_CLIENT_SECRET", "")
 
 
 def validate_config() -> None:
@@ -85,10 +109,27 @@ def validate_config() -> None:
         missing.append("ADMIN_BOT_TOKEN")
     if not VAULT_KEY:
         missing.append("VAULT_KEY")
+    else:
+        # [SECURITY] التأكد إن مفتاح التشفير صالح فعلاً (Fernet)
+        try:
+            from cryptography.fernet import Fernet
+        except ImportError:
+            Fernet = None  # المكتبة هتتسطب من requirements.txt — الفحص يتم وقتها
+        if Fernet is not None:
+            try:
+                Fernet(VAULT_KEY.encode("utf-8"))
+            except Exception:
+                raise SystemExit(
+                    "❌ مفتاح التشفير VAULT_KEY غير صالح!\n"
+                    "لازم يكون مفتاح Fernet صحيح. ولّد واحد جديد بالأمر:\n"
+                    "python -c \"from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())\""
+                )
     if DEV_ID == 0:
         missing.append("DEV_ID")
     if missing:
         raise SystemExit(
-            "❌ إعدادات حرجة ناقصة في ملف .env: " + ", ".join(missing)
-            + "\nانسخ .env.example إلى .env واملأ القيم ثم شغّل البوت مجدداً."
+            "❌ إعدادات حرجة ناقصة: " + ", ".join(missing) + "\n"
+            "على Streamlit Cloud: افتح التطبيق ← تبويب Secrets وأضف المتغيرات الناقصة بنفس "
+            "الأسماء ثم اعمل Restart للتطبيق.\n"
+            "على جهازك: انسخ .env.example إلى .env واملأ القيم ثم شغّل البوت مجدداً."
         )

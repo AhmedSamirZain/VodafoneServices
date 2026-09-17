@@ -1,66 +1,60 @@
 # -*- coding: utf-8 -*-
 """
-Streamlit - مجرد مشغل للكود الأساسي
-الكود الأساسي كله في vodafone_telegram_bot.py
-Streamlit بيدور على الملف ده عشان يشغله
+streamlit_app.py — نقطة دخول ستريمليت (اللي بيتفتح على Streamlit Cloud)
+الكود الأساسي كله في Vodafone_fixed.py — الملف ده بيشغّله وبس ويعرض الحالة.
 """
 
+import traceback
+
 import streamlit as st
-import threading
-import time
 
-st.set_page_config(page_title="Vodafone Bot - Running", page_icon="🤖", layout="centered")
+st.set_page_config(page_title="Vodafone Bot", page_icon="🤖", layout="centered")
+st.title("🤖 بوت فودافون — BRSHAMH FLEX")
 
-st.title("🤖 بوت فودافون شغال")
-st.caption("الكود الأساسي: `vodafone_telegram_bot.py` | الملف ده مجرد مشغل لـ Streamlit")
-
-# تشغيل البوت في الخلفية
 try:
-    import vodafone_telegram_bot as core
+    # استيراد الكود الأساسي (أول سطر فيه بيفحص إعدادات .env / Secrets)
+    import Vodafone_fixed as core
 
-    # شغل بوت تليجرام في ثريد منفصل عشان Streamlit ميعلقش
-    if "bot_started" not in st.session_state:
-        st.session_state.bot_started = False
+    # شغّل البوتين في خيوط خلفية — آمنة ضد التكرار مع كل rerun
+    core.start()
+    status = core.get_status()
 
-    if not st.session_state.bot_started:
-        def run_bot():
-            try:
-                core.bot.infinity_polling(timeout=10, long_polling_timeout=5, skip_pending=True)
-            except Exception as e:
-                print(f"Bot error: {e}")
+    if status["running"]:
+        st.success("✅ البوتين شغالين دلوقتي (بوت المستخدمين + بوت التحكم)")
+        if status.get("since"):
+            st.caption(f"شغال من: `{status['since']}`")
+    else:
+        st.warning("البوت لم يبدأ بعد")
 
-        threading.Thread(target=run_bot, daemon=True).start()
-        st.session_state.bot_started = True
-        time.sleep(1)
-
-    # واجهة بسيطة
-    st.success("✅ البوت شغال على تليجرام دلوقتي")
-    st.info(f"🔗 رابط فودافون: `{core.VODAFONE_URL[:70]}...`")
-    
-    col1, col2, col3 = st.columns(3)
-    col1.metric("🔁 معلق", core.MAX_RETRIES)
-    col2.metric("🔐 باسورد غلط", core.MAX_RETRIES_WRONG_PASSWORD)
-    col3.metric("⏰ تلقائي", f"{core.AUTO_CHECK_INTERVAL_MINUTES}د")
+    st.info("📱 افتح تليجرام وابعت /start لبوت المستخدمين عشان تستخدمه.")
 
     st.divider()
-    st.markdown("**📱 افتح تليجرام ودوس /start عشان تستخدم البوت**")
-    st.caption("💡 البوت هيفضل شغال طول ما صفحة Streamlit مفتوحة. على Streamlit Cloud هيفضل شغال 24 ساعة")
+    st.markdown("**🔐 حالة الإعدادات (من Secrets / .env)**")
+    st.caption(
+        f"- توكن بوت المستخدمين: {'✅ موجود' if core.USER_BOT_TOKEN else '❌ ناقص'}\n"
+        f"- توكن بوت التحكم: {'✅ موجود' if core.ADMIN_BOT_TOKEN else '❌ ناقص'}\n"
+        f"- مفتاح التشفير VAULT_KEY: {'✅ موجود' if core.VAULT_KEY else '❌ ناقص'}\n"
+        f"- DEV_ID: {core.DEV_ID}"
+    )
 
-    # عرض حالة
     st.divider()
-    if st.button("🔄 تحديث الحالة"):
-        st.rerun()
+    st.caption(
+        "💡 البوت بيفضل شغال طول ما تطبيق ستريمليت ده شغال. "
+        "لو عدّلت الـ Secrets أو الكود اعمل Restart للتطبيق من لوحة Streamlit Cloud."
+    )
 
-    with st.expander("📄 الكود الأساسي", expanded=False):
-        st.caption("كل المنطق في vodafone_telegram_bot.py (1339 سطر). الملف ده 40 سطر بس.")
-        try:
-            code = open("vodafone_telegram_bot.py", "r", encoding="utf-8").read()
-            st.code(code[:3000] + "\n\n... (1339 سطر)", language="python")
-        except:
-            st.code("vodafone_telegram_bot.py مش موجود")
+except SystemExit as e:
+    # validate_config() بيقفّل البوت لو في إعداد ناقص
+    st.error("❌ البوت لم يعمل — في إعدادات ناقصة")
+    st.code(str(e))
+    st.markdown(
+        "**الحل:** على Streamlit Cloud افتح تطبيقك ← تبويب **Secrets** وتأكد إن "
+        "المتغيرات دي موجودة بنفس الأسماء بالظبط:\n\n"
+        "`USER_BOT_TOKEN` و `ADMIN_BOT_TOKEN` و `VAULT_KEY` و `DEV_ID`\n\n"
+        "وبعدين اعمل **Restart** للتطبيق."
+    )
 
 except Exception as e:
-    st.error(f"❌ خطأ: {e}")
-    import traceback
+    st.error(f"❌ خطأ أثناء التشغيل: {e}")
     st.code(traceback.format_exc())
-    st.warning("تأكد ان vodafone_telegram_bot.py موجود جنب streamlit_app.py")
+    st.warning("تأكد إن ملف Vodafone_fixed.py موجود جنب streamlit_app.py في الريبو.")
