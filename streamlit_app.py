@@ -2,6 +2,8 @@
 """
 streamlit_app.py — نقطة دخول ستريمليت (اللي بيتفتح على Streamlit Cloud)
 الكود الأساسي كله في Vodafone_fixed.py — الملف ده بيشغّله وبس ويعرض الحالة.
+
+البوت محتاج سِرّين (Secrets) بس: BOT_TOKEN و ADMIN_IDS
 """
 
 import traceback
@@ -15,26 +17,27 @@ try:
     # استيراد الكود الأساسي (أول سطر فيه بيفحص إعدادات .env / Secrets)
     import Vodafone_fixed as core
 
-    # شغّل البوتين في خيوط خلفية — آمنة ضد التكرار مع كل rerun
+    # شغّل البوت في خيط خلفية — آمن ضد التكرار مع كل rerun
     core.start()
     status = core.get_status()
 
     if status["running"]:
-        st.success("✅ البوتين شغالين دلوقتي (بوت المستخدمين + بوت التحكم)")
+        st.success("✅ البوت شغال دلوقتي (المستخدمين + لوحة التحكم على نفس البوت)")
         if status.get("since"):
             st.caption(f"شغال من: `{status['since']}`")
     else:
         st.warning("البوت لم يبدأ بعد")
 
-    st.info("📱 افتح تليجرام وابعت /start لبوت المستخدمين عشان تستخدمه.")
+    st.info("📱 افتح تليجرام وابعت /start — الأدمن هيفتح له لوحة التحكم، وباقي المستخدمين القائمة العادية.")
 
     st.divider()
     st.markdown("**🔐 حالة الإعدادات (من Secrets / .env)**")
     st.caption(
-        f"- توكن بوت المستخدمين: {'✅ موجود' if core.USER_BOT_TOKEN else '❌ ناقص'}\n"
-        f"- توكن بوت التحكم: {'✅ موجود' if core.ADMIN_BOT_TOKEN else '❌ ناقص'}\n"
-        f"- مفتاح التشفير VAULT_KEY: {'✅ موجود' if core.VAULT_KEY else '❌ ناقص'}\n"
-        f"- DEV_ID: {core.DEV_ID}"
+        f"- `BOT_TOKEN`: {'✅ موجود' if core.BOT_TOKEN else '❌ ناقص'}\n"
+        f"- `ADMIN_IDS`: {'✅ ' + str(len(core.ADMINS)) + ' أدمن' if core.ADMINS else '❌ ناقص'}"
+        f"{(' — ' + ', '.join(str(a) for a in sorted(core.ADMINS))) if core.ADMINS else ''}\n"
+        f"- مفتاح التشفير VAULT_KEY: ✅ {core.VAULT_KEY_SOURCE}\n"
+        f"- المطور الأساسي DEV_ID: `{core.DEV_ID}`"
     )
 
     st.divider()
@@ -49,9 +52,13 @@ except SystemExit as e:
     st.code(str(e))
     st.markdown(
         "**الحل:** على Streamlit Cloud افتح تطبيقك ← تبويب **Secrets** وتأكد إن "
-        "المتغيرات دي موجودة بنفس الأسماء بالظبط:\n\n"
-        "`USER_BOT_TOKEN` و `ADMIN_BOT_TOKEN` و `VAULT_KEY` و `DEV_ID`\n\n"
-        "وبعدين اعمل **Restart** للتطبيق."
+        "السِرّين دول موجودين بنفس الأسماء بالظبط:\n\n"
+        "```toml\n"
+        'BOT_TOKEN = "123456789:AA..."\n'
+        'ADMIN_IDS = "111111111, 222222222"\n'
+        "```\n\n"
+        "وبعدين اعمل **Restart** للتطبيق. (مفيش أي إعدادات تانية مطلوبة — "
+        "مفتاح التشفير بيتشتق تلقائياً من `BOT_TOKEN`.)"
     )
 
 except Exception as e:

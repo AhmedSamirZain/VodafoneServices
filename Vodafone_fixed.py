@@ -7,6 +7,10 @@
 #  5) تقييد محاولات تسجيل الدخول (5 محاولات / 15 دقيقة)
 #  6) سجل تدقيق audit.log للعمليات الحساسة + سجل عام bot.log
 #  التفاصيل: security_report.md | الشرح الكامل: docs/شرح_البوت.md
+#
+#  [تعديل جديد] البوت بقى بوت واحد بس:
+#     - سِرّين فقط مطلوبين: BOT_TOKEN و ADMIN_IDS
+#     - المستخدمون والأدمن على نفس البوت (لوحة التحكم بتفتح بـ /start للأدمن)
 # ======================================================================
 
 import telebot
@@ -35,15 +39,18 @@ from security import (
 )
 
 # ==================== الإعدادات الأساسية [SECURITY] ====================
-# ⚠️ كل الأسرار (توكنات البوتين، هويات الإدارة، رقم الدفع، مفتاح التشفير)
-#    تأتي الآن من ملف .env عبر config.py — لم يعد هناك أي سر داخل الكود.
-# انظر .env.example للنموذج. وأعد توليد توكنات البوتين من @BotFather (/revoke)
-# لأن القديمة كانت مكتوبة في الكود الأصلي وتعتبر مكشوفة.
+# ⚠️ البوت كله بيشتغل بسِرّين (Secrets) بس:
+#       BOT_TOKEN   = توكن البوت من @BotFather
+#       ADMIN_IDS   = أرقام تليجرام الأدمن (واحد أو أكتر، مفصولة بفواصل)
+#    الاتنين بييجوا من .env أو من Secrets ستريمليت عبر config.py.
+#    أول رقم في ADMIN_IDS = المطور الأساسي، والباقي أدمن بنفس الصلاحيات.
+#    مفتاح التشفير VAULT_KEY بيتشتق أوتوماتيك من BOT_TOKEN (مش محتاج تضيفه).
+#    انظر .env.example للنموذج.
 from config import (
-    USER_BOT_TOKEN,              # توكن بوت المستخدمين (من .env)
-    ADMIN_BOT_TOKEN,             # توكن بوت لوحة التحكم (من .env)
-    DEV_ID,                      # ID المطور
-    ASSISTANT_ADMIN_ID,          # ID مساعد الإدارة
+    BOT_TOKEN,                   # توكن البوت الوحيد (من .env / Secrets)
+    ADMINS,                      # مجموعة أرقام الأدمن (من ADMIN_IDS)
+    DEV_ID,                      # ID المطور الأساسي (أول رقم في ADMIN_IDS)
+    ASSISTANT_ADMIN_ID,          # ID أول مساعد (تاني رقم في ADMIN_IDS)
     DEV_USERNAME,                # يوزر المطور
     SUBSCRIPTION_PRICE,          # سعر الاشتراك بالجنيه شهرياً
     VODAFONE_CASH_NUMBER,        # رقم فودافون كاش للاستقبال
@@ -52,13 +59,14 @@ from config import (
     DB_FILE,                     # اسم ملف قاعدة البيانات
     DELETE_OLD_DB_ON_START,      # حذف قاعدة البيانات عند الإقلاع (مفروض False)
     VAULT_KEY,                   # مفتاح تشفير كلمات المرور المحفوظة (Fernet)
+    VAULT_KEY_SOURCE,            # منين جه مفتاح التشفير (للعرض في صفحة ستريمليت)
     AUDIT_LOG_FILE,              # ملف سجل العمليات الحساسة
     VODA_CLIENT_ID,              # معرّف عميل تطبيق فودافون
     VODA_CLIENT_SECRET,          # سر عميل تطبيق فودافون
     validate_config,
 )
 validate_config()  # [SECURITY] فشل فوري عند الإقلاع لو في إعداد حرج ناقص
-ADMINS = {DEV_ID, ASSISTANT_ADMIN_ID}
+ADMINS = set(ADMINS)  # نسخة محلية قابلة للتعديل وقت التشغيل
 
 
 # إعداد التسجيل [SECURITY: مستوى INFO + ملف bot.log للتحقيق في الحوادث]
@@ -73,9 +81,11 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-# إنشاء البوتين
-user_bot = telebot.TeleBot(USER_BOT_TOKEN)
-admin_bot = telebot.TeleBot(ADMIN_BOT_TOKEN)
+# إنشاء البوت (بوت واحد بيخدم المستخدمين + لوحة التحكم معاً)
+bot = telebot.TeleBot(BOT_TOKEN)
+# الأسماء القديمة بتفضل شغالة (كل الكود بيستخدمها) — كلها بتشير لنفس البوت
+user_bot = bot
+admin_bot = bot
 
 # ==================== إدارة الجلسات وتجديد التوكن ====================
 # تخزين الجلسات مع وقت الانتهاء
@@ -10293,7 +10303,7 @@ class VodafoneDiscountAuto:
         except Exception:
             return False, "❌ حدث خطأ غير متوقع"
 
-# ==================== معالجات بوت المستخدمين ====================
+# ==================== معالجات البوت (مستخدمين + لوحة التحكم) ====================
 @user_bot.message_handler(commands=['start'])
 def start_command(message):
     user_id = message.from_user.id
@@ -10301,6 +10311,11 @@ def start_command(message):
     first_name = message.from_user.first_name or "المستخدم"
     
     db.add_user(user_id, username, first_name)
+    
+    # [بوت واحد] الأدمن اللي يبعت /start يفتح لوحة التحكم مباشرة
+    # (admin_start معرّفة تحت في الملف — بتتنفذ وقت الاستدعاء فمفيش مشكلة)
+    if user_id in ADMINS:
+        return admin_start(message)
     
     if not bot_status["is_running"]:
         user_bot.reply_to(message, f"{EMOJI['error']} البوت متوقف حالياً")
@@ -10496,6 +10511,11 @@ def handle_text_messages(message):
     user_id = message.from_user.id
     text = message.text or ""
     first_name = message.from_user.first_name or "المستخدم"
+    
+    # [بوت واحد] لو الأدمن واقف في نص إجراء من لوحة التحكم (بث / تعديل قسم / تغيير سعر...)
+    # الرسالة دي بتاعته → نحوّلها لمعالج الأدمن بدل معالجة المستخدم العادي
+    if user_id in ADMINS and bot_status.get('admin_action'):
+        return admin_handle_text(message)
     
     # معالجة أزرار الشاشة الرئيسية الثابتة
     if text == "🔐 تسجيل الدخول":
@@ -10873,6 +10893,10 @@ def handle_callbacks(call):
     user_id = call.from_user.id
     data = call.data
     first_name = call.from_user.first_name or "المستخدم"
+    
+    # [بوت واحد] كل أزرار لوحة التحكم بتبدأ بـ "admin_" → نحوّلها لمعالج الأدمن
+    if user_id in ADMINS and (data or "").startswith("admin_"):
+        return admin_handle_callbacks(call)
     
     db.update_user_activity(user_id)
     
@@ -11413,7 +11437,9 @@ def handle_callbacks(call):
         handle_apps_service(user_id)
 
 # ==================== لوحة تحكم المطور ====================
-@admin_bot.message_handler(commands=['start'])
+# [بوت واحد] مفيش decorator هنا: الدوال دي بتتنفذ عن طريق التحويل الصريح من
+# معالجات البوت الرئيسية (start_command / handle_callbacks / handle_text_messages)
+# لما يكون المرسِل من ADMINS — عشان مايحصلش تعارض handlers على نفس البوت.
 def admin_start(message):
     if message.from_user.id not in ADMINS:
         admin_bot.reply_to(message, f"{EMOJI['error']} أنت لا تملك الصلاحية")
@@ -11433,7 +11459,7 @@ def admin_start(message):
     
     admin_bot.send_message(message.chat.id, f"{EMOJI['crown']} *لوحة التحكم الرئيسية*\n\nمرحباً بك يا مطور البوت {DEV_USERNAME}", parse_mode='Markdown', reply_markup=markup)
 
-@admin_bot.callback_query_handler(func=lambda call: call.from_user.id in ADMINS)
+# [بوت واحد] بتتنفذ من handle_callbacks لما data يبدأ بـ "admin_" والمرسِل أدمن
 def admin_handle_callbacks(call):
     global SUBSCRIPTION_ENABLED, SUBSCRIPTION_PRICE, VODAFONE_CASH_NUMBER
     data = call.data
@@ -11842,7 +11868,7 @@ def show_sub_button(call, sub_id):
         )
         admin_bot.edit_message_text(f"{sub[3]}\nالتحكم في الزر الفرعي:", call.message.chat.id, call.message.message_id, parse_mode='Markdown', reply_markup=markup)
 
-@admin_bot.message_handler(func=lambda message: message.from_user.id in ADMINS)
+# [بوت واحد] بتتنفذ من handle_text_messages لما المرسِل أدمن وفي إجراء لوحة تحكم شغال
 def admin_handle_text(message):
     global SUBSCRIPTION_PRICE, VODAFONE_CASH_NUMBER
     user_id = message.from_user.id
@@ -11986,46 +12012,33 @@ def admin_handle_text(message):
             admin_bot.reply_to(message, "❌ رقم غير صحيح، أرسل رقم مصري صحيح (11 رقم)")
         bot_status['admin_action'] = None
 
-# ==================== إضافة أوامر بوت المستخدمين ====================
-user_bot_commands = [
-    types.BotCommand("start", "بدء بوت 𝐁𝐑𝐒𝐇𝐀𝐌𝐇 𝐅𝐋𝐄𝐗"),
+# ==================== أوامر البوت (بوت واحد: مستخدمين + لوحة تحكم) ====================
+bot_commands = [
+    types.BotCommand("start", "بدء بوت 𝐁𝐑𝐒𝐇𝐀𝐌𝐇 𝐅𝐋𝐄𝐗 (ولوحة التحكم للأدمن)"),
     types.BotCommand("login", "تسجيل دخول في انا فودافون"),
     types.BotCommand("menu", "قائمه خدمات بوت 𝐁𝐑𝐒𝐇𝐀𝐌𝐇 𝐅𝐋𝐄𝐗"),
     types.BotCommand("cancel", "الغاء العمليه الحاليه")
 ]
 
-admin_bot_commands = [
-    types.BotCommand("start", "فتح لوحة تحكم المطور")
-]
-
 try:
-    user_bot.set_my_commands(user_bot_commands)
-    print("✅ تم تعيين أوامر بوت المستخدمين بنجاح")
+    bot.set_my_commands(bot_commands)
+    print("✅ تم تعيين أوامر البوت بنجاح")
 except Exception as e:
-    print(f"❌ فشل تعيين أوامر بوت المستخدمين: {e}")
+    print(f"❌ فشل تعيين أوامر البوت: {e}")
 
-try:
-    admin_bot.set_my_commands(admin_bot_commands)
-    print("✅ تم تعيين أوامر بوت التحكم بنجاح")
-except Exception as e:
-    print(f"❌ فشل تعيين أوامر بوت التحكم: {e}")
-
-# ==================== تشغيل البوتين ====================
-def run_user_bot():
+# ==================== تشغيل البوت ====================
+def run_bot():
+    """حلقة الاستماع الوحيدة — بوت واحد بيخدم المستخدمين ولوحة التحكم معاً"""
     while True:
         try:
-            user_bot.infinity_polling()
+            bot.infinity_polling()
         except Exception as e:
-            print(f"User bot error: {e}")
+            print(f"Bot error: {e}")
             time.sleep(5)
 
-def run_admin_bot():
-    while True:
-        try:
-            admin_bot.infinity_polling()
-        except Exception as e:
-            print(f"Admin bot error: {e}")
-            time.sleep(5)
+# أسماء قديمة (لو أي حاجة بتنادي عليها) — كلها بتشغّل نفس البوت
+run_user_bot = run_bot
+run_admin_bot = run_bot
 
 # ==================== التشغيل (متوافق مع ستريمليت Streamlit) ====================
 _START_LOCK = threading.Lock()
@@ -12034,9 +12047,9 @@ _START_TIME = None
 
 def start() -> bool:
     """
-    تشغيل البوتين في خيوط خلفية (بدون ما يبلّكس أي حاجة).
-    آمن للاستدعاء أكتر من مرة — ستريمليت بإعادة تنفيذ السكربت مع كل
-    تفاعل/تحديث للصفحة، والحماية دي بتضمن إن الخيوط ماتتكررش.
+    تشغيل البوت في خيط خلفية (بدون ما يبلّكس أي حاجة).
+    آمن للاستدعاء أكتر من مرة — ستريمليت بيعيد تنفيذ السكربت مع كل
+    تفاعل/تحديث للصفحة، والحماية دي بتضمن إن الخيط مايتكررش.
     يرجع True لو اتشغل دلوقتي، وFalse لو كان شغال من قبل.
     """
     global _BOT_STARTED, _START_TIME
@@ -12045,8 +12058,7 @@ def start() -> bool:
             return False
         _BOT_STARTED = True
         _START_TIME = datetime.now()
-        threading.Thread(target=run_user_bot, daemon=True).start()
-        threading.Thread(target=run_admin_bot, daemon=True).start()
+        threading.Thread(target=run_bot, daemon=True).start()
     return True
 
 def get_status() -> Dict:
@@ -12054,6 +12066,7 @@ def get_status() -> Dict:
     return {
         "running": _BOT_STARTED,
         "since": _START_TIME.strftime("%Y-%m-%d %H:%M:%S") if _START_TIME else None,
+        "admins": len(ADMINS),
     }
 
 def _in_streamlit() -> bool:
@@ -12071,9 +12084,8 @@ def main():
     - كونسول عادي (python Vodafone_fixed.py): بينشغل ويبلّكس لحد Ctrl+C.
     """
     if start():
-        print("جاري تشغيل البوتين...")
-        print("بوت المستخدمين يعمل الآن")
-        print("بوت التحكم يعمل الآن")
+        print("جاري تشغيل البوت...")
+        print("البوت يعمل الآن (مستخدمين + لوحة تحكم)")
     else:
         print("البوت كان شغال من قبل — اتسكت التكرار ✅")
     
@@ -12085,7 +12097,7 @@ def main():
         while True:
             time.sleep(60)
     except KeyboardInterrupt:
-        print("\nتم إيقاف البوتين")
+        print("\nتم إيقاف البوت")
 
 if __name__ == "__main__":
     main()
