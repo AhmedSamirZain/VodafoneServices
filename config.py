@@ -109,6 +109,21 @@ def validate_config() -> None:
         missing.append("ADMIN_BOT_TOKEN")
     if not VAULT_KEY:
         missing.append("VAULT_KEY")
+    else:
+        # [SECURITY] التأكد إن مفتاح التشفير صالح فعلاً (Fernet)
+        try:
+            from cryptography.fernet import Fernet
+        except ImportError:
+            Fernet = None  # المكتبة هتتسطب من requirements.txt — الفحص يتم وقتها
+        if Fernet is not None:
+            try:
+                Fernet(VAULT_KEY.encode("utf-8"))
+            except Exception:
+                raise SystemExit(
+                    "❌ مفتاح التشفير VAULT_KEY غير صالح!\n"
+                    "لازم يكون مفتاح Fernet صحيح. ولّد واحد جديد بالأمر:\n"
+                    "python -c \"from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())\""
+                )
     if DEV_ID == 0:
         missing.append("DEV_ID")
     if missing:
