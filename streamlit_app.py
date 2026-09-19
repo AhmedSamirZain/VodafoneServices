@@ -10,8 +10,13 @@ import traceback
 
 import streamlit as st
 
-st.set_page_config(page_title="Vodafone Bot", page_icon="🤖", layout="centered")
-st.title("🤖 بوت فودافون — BRSHAMH FLEX")
+try:
+    from config import BOT_NAME
+except Exception:
+    BOT_NAME = "VodafoneServices"
+
+st.set_page_config(page_title=BOT_NAME, page_icon="🤖", layout="centered")
+st.title(f"🤖 {BOT_NAME} — بوت خدمات فودافون")
 
 try:
     # استيراد الكود الأساسي (أول سطر فيه بيفحص إعدادات .env / Secrets)
