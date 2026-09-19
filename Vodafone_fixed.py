@@ -366,38 +366,120 @@ refresh_thread = threading.Thread(target=auto_refresh_all_tokens, daemon=True)
 refresh_thread.start()
 
 # ==================== وظائف فودافون الأساسية (المستخدمة في الفاميلي) ====================
+def normalize_msisdn(number):
+    """توحيد شكل الرقم: يشيل أي رموز ويرجّعه 11 رقم يبدأ بـ 0 (زي ما API فودافون عايزه)."""
+    digits = re.sub(r"[^0-9]", "", str(number or ""))
+    if digits.startswith("002"):
+        digits = digits[3:]
+    elif digits.startswith("20") and len(digits) >= 12:
+        digits = digits[2:]
+    if len(digits) == 10 and digits.startswith("1"):
+        digits = "0" + digits
+    return digits
+
+
 def get_authorization(number, password):
-    """الحصول على رمز التفويض"""
+    """الحصول على رمز التفويض من فودافون (تسجيل الدخول)"""
     url = "https://mobile.vodafone.com.eg/auth/realms/vf-realm/protocol/openid-connect/token"
-    
-    data = {
-        "grant_type": "password",
-        "username": number,
-        "password": password,
-        "client_secret": VODA_CLIENT_SECRET,
-        "client_id": "ana-vodafone-app"
-    }
-    
+
+    # [إصلاح] لو سر عميل التطبيق ناقص، فودافون بترجع invalid_client والبوت كان بيقول
+    # "الرقم أو كلمة السر غير صحيحة" بالغلط. بنوضّح السبب الحقيقي بدل ما نلخبط المستخدم.
+    if not VODA_CLIENT_SECRET:
+        return {
+            "success": False,
+            "message": (
+                "إعداد ناقص: VODA_CLIENT_SECRET فاضي.\n"
+                "ضيفه في ملف .env أو في Secrets ثم أعد تشغيل البوت."
+            ),
+            "error": "missing_client_secret",
+        }
+
+    msisdn = normalize_msisdn(number)
+
+    # [إصلاح] نفس الهيدرز اللي بيبعتها تطبيق "أنا فودافون" — من غيرها السيرفر بيرفض الطلب
     headers = {
-        'User-Agent': "okhttp/4.11.0",
+        'User-Agent': "okhttp/4.12.0",
         'Accept': "application/json, text/plain, */*",
-        'Content-Type': 'application/x-www-form-urlencoded'
+        'Accept-Encoding': "gzip",
+        'Content-Type': "application/x-www-form-urlencoded",
+        'silentLogin': "true",
+        'x-agent-operatingsystem': "15",
+        'clientId': "AnaVodafoneAndroid",
+        'Accept-Language': "ar",
+        'x-agent-device': "Samsung SM-A165F",
+        'x-agent-version': "2025.12.2",
+        'x-agent-build': "1080",
+        'digitalId': "25VT5Q5QWG8DK",
+        'device-id': "b26ba335813fad21",
     }
-    
-    try:
-        response = requests.post(url, data=data, headers=headers, timeout=30)
-        
+
+    # نجرب الرقم بصيغته الكاملة، ولو اترفض نجرّبه من غير الصفر البادئ (بعض الحسابات كده)
+    candidates = [msisdn]
+    if msisdn.startswith("0") and len(msisdn) == 11:
+        candidates.append(msisdn[1:])
+
+    last_error = None
+    last_status = None
+    for candidate in candidates:
+        data = {
+            "grant_type": "password",
+            "username": candidate,
+            "password": password,
+            "client_secret": VODA_CLIENT_SECRET,
+            "client_id": VODA_CLIENT_ID or "ana-vodafone-app",
+        }
+        try:
+            response = requests.post(url, data=data, headers=headers, timeout=30)
+        except requests.exceptions.ConnectionError:
+            return {"success": False, "message": "خطأ في الاتصال بالإنترنت"}
+        except Exception as e:
+            return {"success": False, "message": f"حدث خطأ: {str(e)}"}
+
         if response.status_code == 200:
             tokens = response.json()
             access_token = tokens.get("access_token")
-            return {"success": True, "token": access_token, "bearer_token": "Bearer " + access_token}
-        else:
-            return {"success": False, "message": "الرقم أو كلمة السر غير صحيحة", "status_code": response.status_code}
-            
-    except requests.exceptions.ConnectionError:
-        return {"success": False, "message": "خطأ في الاتصال بالإنترنت"}
-    except Exception as e:
-        return {"success": False, "message": f"حدث خطأ: {str(e)}"}
+            if access_token:
+                return {
+                    "success": True,
+                    "token": access_token,
+                    "bearer_token": "Bearer " + access_token,
+                    "refresh_token": tokens.get("refresh_token"),
+                    "phone": candidate,
+                }
+            last_error = "السيرفر رجّع رد بدون توكن"
+            last_status = response.status_code
+            continue
+
+        last_status = response.status_code
+        try:
+            body = response.json()
+            last_error = body.get("error_description") or body.get("error") or response.text[:200]
+        except Exception:
+            last_error = (response.text or "")[:200]
+
+        # غلط في البيانات فعلاً؟ يبقى مفيش فايدة من تجربة صيغة تانية غير 401 على username
+        if response.status_code not in (400, 401):
+            break
+
+    err = (last_error or "").lower()
+    if "invalid_client" in err or "unauthorized_client" in err:
+        msg = ("بيانات عميل التطبيق غير صحيحة (VODA_CLIENT_SECRET).\n"
+               "المشكلة في إعدادات البوت مش في رقمك أو كلمة سرك.")
+    elif "invalid_grant" in err or "invalid user credentials" in err:
+        msg = "الرقم أو كلمة السر غير صحيحة"
+    elif last_status in (429,):
+        msg = "فودافون رفضت المحاولات المتكررة، استنى شوية وجرّب تاني"
+    elif last_status and last_status >= 500:
+        msg = "سيرفر فودافون مش مستجيب حالياً، جرّب بعد شوية"
+    else:
+        msg = "فشل تسجيل الدخول"
+
+    return {
+        "success": False,
+        "message": msg,
+        "status_code": last_status,
+        "details": last_error,
+    }
 
 def change_password_api(phone, current_password, new_password, token):
     """تغيير كلمة المرور عبر API فودافون"""
@@ -8660,12 +8742,30 @@ def handle_login(message, user_id):
                 reply_markup=main_menu_markup()
             )
         else:
+            err_msg = auth_result.get('message', 'فشل تسجيل الدخول')
+            details = auth_result.get('details')
+            status_code = auth_result.get('status_code')
+
+            # [إصلاح] لو السبب مش بيانات المستخدم (إعداد ناقص / سيرفر) نبلّغ الأدمن
+            if auth_result.get('error') == 'missing_client_secret' or 'VODA_CLIENT_SECRET' in err_msg:
+                for admin_id in list(ADMINS):
+                    try:
+                        user_bot.send_message(admin_id, f"⚠️ تسجيل الدخول فاشل بسبب إعداد ناقص:\n{err_msg}")
+                    except Exception:
+                        pass
+
+            extra = ""
+            if user_id in ADMINS and (details or status_code):
+                extra = f"\n\n🛠 تفاصيل (أدمن): `{status_code}` — `{details}`"
+
+            # نسيب المستخدم في نفس الخطوة يقدر يعيد إدخال كلمة المرور من غير /start
+            bot_status['user_data'][user_id]['action'] = 'login_waiting_password'
             user_bot.send_message(
                 user_id,
-                f"{EMOJI['error']} *فشل تسجيل الدخول!*\n\n{auth_result['message']}\n\nللمحاولة مرة أخرى أرسل /start",
+                f"{EMOJI['error']} *فشل تسجيل الدخول!*\n\n{err_msg}\n\n"
+                f"🔐 ابعت كلمة المرور تاني، أو /start للبداية من جديد.{extra}",
                 parse_mode='Markdown'
             )
-            del bot_status['user_data'][user_id]
 
 def is_logged_in(user_id):
     """التحقق من أن المستخدم قام بتسجيل الدخول وتجديد الجلسة إذا لزم الأمر"""
