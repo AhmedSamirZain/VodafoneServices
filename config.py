@@ -118,8 +118,12 @@ DEV_ID = ADMIN_IDS[0] if ADMIN_IDS else 0                      # المطور ا
 ASSISTANT_ADMIN_ID = ADMIN_IDS[1] if len(ADMIN_IDS) > 1 else 0  # أول مساعد
 ADMINS = set(ADMIN_IDS)                                        # كل الأدمن (مجموعة)
 
-# يوزر المطور للعرض فقط (مش سِر) — يتغيّر من .env لو حبيت
-DEV_USERNAME = _get("DEV_USERNAME", "@B_R_S_H_M")
+# اسم البوت للعرض في العناوين والرسائل
+BOT_NAME = _get("BOT_NAME", "VodafoneServices")
+
+# يوزر المطور للعرض فقط (مش سِر) — حط يوزرك من .env / Secrets عشان زرار "تواصل مع المطور" يشتغل.
+# لو فاضي، الزرار مش هيظهر ومفيش حاجة هتتكسر.
+DEV_USERNAME = _get("DEV_USERNAME", "")
 
 
 # ==================== مفتاح التشفير (مشتق من BOT_TOKEN) ====================
@@ -150,26 +154,23 @@ SUBSCRIPTION_PRICE = int(_get("SUBSCRIPTION_PRICE", "250") or 250)   # السع�
 VODAFONE_CASH_NUMBER = _get("VODAFONE_CASH_NUMBER", "")              # رقم الاستقبال
 SUBSCRIPTION_ENABLED = _get("SUBSCRIPTION_ENABLED", "True").lower() == "true"
 
-# ==================== القنوات المطلوب الاشتراك فيها ====================
-# تفعيل/إيقاف الاشتراك الإجباري في القنوات.
-# الافتراضي الآن False → أي مستخدم يقدر يستخدم البوت من غير ما يشترك في أي قناة.
-# لو عايز ترجّعه تاني حط FORCE_JOIN_ENABLED=True في الـ .env / Secrets.
-FORCE_JOIN_ENABLED = _get("FORCE_JOIN_ENABLED", "False").lower() == "true"
-
-CHANNELS = [
-    {"name": "BRSHAMH FLEX15", "link": "https://t.me/BRSHAMH_FLEX15", "chat_id": "@BRSHAMH_FLEX15"},
-    {"name": "BRSHAMHFLEX15", "link": "https://t.me/BRSHAMHFLEX15", "chat_id": "@BRSHAMHFLEX15"},
-]
-
 # ==================== قاعدة البيانات (اختياري) ====================
-DB_FILE = _get("DB_FILE", "spartan_new.db")
+DB_FILE = _get("DB_FILE", "vodafoneservices.db")
+# ترحيل تلقائي من اسم قاعدة البيانات القديم (أول تشغيل بعد التحديث فقط)
+if DB_FILE == "vodafoneservices.db" and not os.path.exists(DB_FILE) and os.path.exists("spartan_new.db"):
+    try:
+        import shutil
+        shutil.copy2("spartan_new.db", DB_FILE)
+    except Exception:
+        pass
 DELETE_OLD_DB_ON_START = _get("DELETE_OLD_DB_ON_START", "False").lower() == "true"
 
 # ملف سجل العمليات الحساسة
 AUDIT_LOG_FILE = _get("AUDIT_LOG_FILE", "audit.log")
 
-# ==================== بيانات عميل تطبيق فودافون ====================
-# ⚠️ بيانات عميل التطبيق الرسمي لـ "أنا فودافون" والمطلوبة لمطابقة الـ API.
+# ==================== بيانات عميل تطبيق فودافون (اختياري) ====================
+# لو عندك سر عميل "أنا فودافون" حطه هنا، ولو مش عندك سيبه فاضي —
+# البوت بيستخدم بيانات موقع فودافون كبديل تلقائي وتسجيل الدخول شغال من غيره.
 VODA_CLIENT_ID = _get("VODA_CLIENT_ID", "ana-vodafone-app")
 VODA_CLIENT_SECRET = _get("VODA_CLIENT_SECRET", "")
 

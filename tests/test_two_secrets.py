@@ -235,9 +235,7 @@ class TestAdminDispatch(unittest.TestCase):
     def test_user_callback_is_not_routed_to_admin(self):
         seen, answered = [], []
         orig_admin = core.admin_handle_callbacks
-        orig_check = core.check_subscription
         core.admin_handle_callbacks = lambda c: seen.append(c.data)
-        core.check_subscription = lambda uid: (True, [])   # بلا نداءات شبكة لـ getChatMember
         core.bot.answer_callback_query = lambda *a, **k: answered.append(a[1:] or a)
         core.bot.send_message = lambda *a, **k: None
         core.bot.edit_message_text = lambda *a, **k: None
@@ -246,7 +244,6 @@ class TestAdminDispatch(unittest.TestCase):
             core.handle_callbacks(_call(USER_ID, "my_services"))
         finally:
             core.admin_handle_callbacks = orig_admin
-            core.check_subscription = orig_check
             core.bot_status["is_running"] = True
         self.assertEqual(seen, [])            # زرار المستخدم مايتحوّلش للوحة التحكم
         self.assertTrue(answered)             # والمعالج العادي هو اللي رد

@@ -55,8 +55,6 @@ from config import (
     SUBSCRIPTION_PRICE,          # سعر الاشتراك بالجنيه شهرياً
     VODAFONE_CASH_NUMBER,        # رقم فودافون كاش للاستقبال
     SUBSCRIPTION_ENABLED,        # تفعيل/إيقاف نظام الاشتراك (False = مجاني للجميع)
-    CHANNELS,                    # القنوات المطلوب الاشتراك فيها
-    FORCE_JOIN_ENABLED,          # تفعيل/إيقاف الاشتراك الإجباري في القنوات (False = مفتوح للجميع)
     DB_FILE,                     # اسم ملف قاعدة البيانات
     DELETE_OLD_DB_ON_START,      # حذف قاعدة البيانات عند الإقلاع (مفروض False)
     VAULT_KEY,                   # مفتاح تشفير كلمات المرور المحفوظة (Fernet)
@@ -378,26 +376,20 @@ def normalize_msisdn(number):
     return digits
 
 
-def get_authorization(number, password):
-    """الحصول على رمز التفويض من فودافون (تسجيل الدخول)"""
-    url = "https://mobile.vodafone.com.eg/auth/realms/vf-realm/protocol/openid-connect/token"
+def _voda_nonce(n):
+    """نص عشوائي لهيدرز الجهاز (عشان كل محاولة تبان من جهاز مختلف)"""
+    return ''.join(random.choice(string.ascii_lowercase + string.digits) for _ in range(n))
 
-    # [إصلاح] لو سر عميل التطبيق ناقص، فودافون بترجع invalid_client والبوت كان بيقول
-    # "الرقم أو كلمة السر غير صحيحة" بالغلط. بنوضّح السبب الحقيقي بدل ما نلخبط المستخدم.
-    if not VODA_CLIENT_SECRET:
-        return {
-            "success": False,
-            "message": (
-                "إعداد ناقص: VODA_CLIENT_SECRET فاضي.\n"
-                "ضيفه في ملف .env أو في Secrets ثم أعد تشغيل البوت."
-            ),
-            "error": "missing_client_secret",
-        }
 
-    msisdn = normalize_msisdn(number)
+# بيانات عميل موقع فودافون — بديل تلقائي يخلي تسجيل الدخول شغال حتى لو سر التطبيق مش متظبط
+_VODA_WEB_CLIENT_ID = "my-vodafone-app"
+_VODA_WEB_CLIENT_SECRET = "a2ec6fff-0b7f-4aa4-a733-96ceae5c84c3"
+_VODA_TOKEN_URL = "https://mobile.vodafone.com.eg/auth/realms/vf-realm/protocol/openid-connect/token"
 
-    # [إصلاح] نفس الهيدرز اللي بيبعتها تطبيق "أنا فودافون" — من غيرها السيرفر بيرفض الطلب
-    headers = {
+
+def _voda_app_headers():
+    """هيدرز تطبيق «أنا فودافون»"""
+    return {
         'User-Agent': "okhttp/4.12.0",
         'Accept': "application/json, text/plain, */*",
         'Accept-Encoding': "gzip",
@@ -409,77 +401,116 @@ def get_authorization(number, password):
         'x-agent-device': "Samsung SM-A165F",
         'x-agent-version': "2025.12.2",
         'x-agent-build': "1080",
-        'digitalId': "25VT5Q5QWG8DK",
-        'device-id': "b26ba335813fad21",
+        'digitalId': _voda_nonce(13),
+        'device-id': _voda_nonce(16),
     }
 
-    # نجرب الرقم بصيغته الكاملة، ولو اترفض نجرّبه من غير الصفر البادئ (بعض الحسابات كده)
+
+def _voda_web_headers():
+    """هيدرز موقع فودافون"""
+    return {
+        'User-Agent': "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        'Accept': "application/json, text/plain, */*",
+        'Accept-Encoding': "gzip",
+        'Content-Type': "application/x-www-form-urlencoded",
+        'Accept-Language': "ar-EG,ar;q=0.9,en;q=0.8",
+        'clientId': "WebsiteConsumer",
+    }
+
+
+def voda_login_token(number, password):
+    """
+    تسجيل الدخول الموحّد لكل خدمات البوت.
+    بيجرّب بيانات التطبيق (لو السر متظبط) ثم بيانات الموقع كبديل تلقائي،
+    وعلى صيغتين للرقم (بصفر ومن غير).
+    يرجّع {"success": True, "access_token": ..., "refresh_token": ..., "phone": ...}
+    أو {"success": False, "message": ..., "status_code": ..., "details": ...}
+    """
+    msisdn = normalize_msisdn(number)
     candidates = [msisdn]
     if msisdn.startswith("0") and len(msisdn) == 11:
         candidates.append(msisdn[1:])
 
-    last_error = None
-    last_status = None
-    for candidate in candidates:
-        data = {
-            "grant_type": "password",
-            "username": candidate,
-            "password": password,
-            "client_secret": VODA_CLIENT_SECRET,
+    attempts = []
+    if VODA_CLIENT_SECRET:
+        attempts.append((_voda_app_headers(), {
             "client_id": VODA_CLIENT_ID or "ana-vodafone-app",
-        }
-        try:
-            response = requests.post(url, data=data, headers=headers, timeout=30)
-        except requests.exceptions.ConnectionError:
-            return {"success": False, "message": "خطأ في الاتصال بالإنترنت"}
-        except Exception as e:
-            return {"success": False, "message": f"حدث خطأ: {str(e)}"}
+            "client_secret": VODA_CLIENT_SECRET,
+        }))
+    attempts.append((_voda_web_headers(), {
+        "client_id": _VODA_WEB_CLIENT_ID,
+        "client_secret": _VODA_WEB_CLIENT_SECRET,
+    }))
 
-        if response.status_code == 200:
-            tokens = response.json()
-            access_token = tokens.get("access_token")
-            if access_token:
-                return {
-                    "success": True,
-                    "token": access_token,
-                    "bearer_token": "Bearer " + access_token,
-                    "refresh_token": tokens.get("refresh_token"),
-                    "phone": candidate,
-                }
-            last_error = "السيرفر رجّع رد بدون توكن"
-            last_status = response.status_code
-            continue
-
-        last_status = response.status_code
-        try:
-            body = response.json()
-            last_error = body.get("error_description") or body.get("error") or response.text[:200]
-        except Exception:
-            last_error = (response.text or "")[:200]
-
-        # غلط في البيانات فعلاً؟ يبقى مفيش فايدة من تجربة صيغة تانية غير 401 على username
-        if response.status_code not in (400, 401):
+    last_error, last_status, saw_invalid_grant, stop = None, None, False, False
+    for candidate in candidates:
+        if stop:
             break
+        for headers, creds in attempts:
+            try:
+                resp = requests.post(
+                    _VODA_TOKEN_URL,
+                    data={"grant_type": "password", "username": candidate,
+                          "password": password, **creds},
+                    headers=headers, timeout=30)
+            except requests.exceptions.ConnectionError:
+                return {"success": False, "message": "خطأ في الاتصال بالإنترنت"}
+            except Exception as e:
+                return {"success": False, "message": f"حدث خطأ: {e}"}
+
+            if resp.status_code == 200:
+                try:
+                    tokens = resp.json()
+                except Exception:
+                    tokens = {}
+                access = tokens.get("access_token")
+                if access:
+                    return {"success": True, "access_token": access,
+                            "refresh_token": tokens.get("refresh_token"),
+                            "phone": candidate}
+                last_error, last_status = "رد بدون توكن", 200
+                continue
+
+            last_status = resp.status_code
+            try:
+                body = resp.json()
+                last_error = body.get("error_description") or body.get("error") or resp.text[:200]
+            except Exception:
+                last_error = (resp.text or "")[:200]
+            err_low = (last_error or "").lower()
+            if "invalid_grant" in err_low or "invalid user credentials" in err_low:
+                saw_invalid_grant = True
+            if resp.status_code not in (400, 401):
+                stop = True
+                break
 
     err = (last_error or "").lower()
-    if "invalid_client" in err or "unauthorized_client" in err:
-        msg = ("بيانات عميل التطبيق غير صحيحة (VODA_CLIENT_SECRET).\n"
-               "المشكلة في إعدادات البوت مش في رقمك أو كلمة سرك.")
-    elif "invalid_grant" in err or "invalid user credentials" in err:
+    if saw_invalid_grant or "invalid_grant" in err or "invalid user credentials" in err:
         msg = "الرقم أو كلمة السر غير صحيحة"
-    elif last_status in (429,):
-        msg = "فودافون رفضت المحاولات المتكررة، استنى شوية وجرّب تاني"
+    elif "invalid_client" in err or "unauthorized_client" in err:
+        msg = "بيانات الدخول لفودافون غير صالحة حالياً — جرّب تاني بعد شوية"
+    elif last_status == 429:
+        msg = "محاولات كتيرة ورا بعض — استنى دقيقة وجرّب تاني"
     elif last_status and last_status >= 500:
         msg = "سيرفر فودافون مش مستجيب حالياً، جرّب بعد شوية"
+    elif last_status == 200:
+        msg = "السيرفر رجّع رد غير مكتمل — جرّب تاني"
     else:
         msg = "فشل تسجيل الدخول"
+    return {"success": False, "message": msg,
+            "status_code": last_status, "details": last_error}
 
-    return {
-        "success": False,
-        "message": msg,
-        "status_code": last_status,
-        "details": last_error,
-    }
+
+def get_authorization(number, password):
+    """الحصول على رمز التفويض من فودافون (تسجيل الدخول الرئيسي)"""
+    r = voda_login_token(number, password)
+    if r["success"]:
+        return {"success": True, "token": r["access_token"],
+                "bearer_token": "Bearer " + r["access_token"],
+                "refresh_token": r.get("refresh_token"), "phone": r["phone"]}
+    return {"success": False, "message": r["message"],
+            "status_code": r.get("status_code"), "details": r.get("details")}
+
 
 def change_password_api(phone, current_password, new_password, token):
     """تغيير كلمة المرور عبر API فودافون"""
@@ -877,48 +908,14 @@ def transfer_flex(token, sender_phone, receiver_phone, amount):
 # ==================== وظائف من ملف تفعيل الخط بالكامل ====================
 def login_balance(msisdn, password):
     """تسجيل الدخول والحصول على التوكنات"""
-    url = "https://mobile.vodafone.com.eg/auth/realms/vf-realm/protocol/openid-connect/token"
-    
-    payload = f'grant_type=password&username={msisdn}&password={password}&client_secret={VODA_CLIENT_SECRET}&client_id=ana-vodafone-app'
-    
-    headers = {
-        'User-Agent': 'okhttp/4.12.0',
-        'Accept': 'application/json, text/plain, */*',
-        'Accept-Encoding': 'gzip',
-        'silentLogin': 'true',
-        'x-agent-operatingsystem': '15',
-        'clientId': 'AnaVodafoneAndroid',
-        'Accept-Language': 'ar',
-        'x-agent-device': 'INFINIX Infinix X6725',
-        'x-agent-version': '2025.11.1',
-        'x-agent-build': '1063',
-        'digitalId': '25WM5Q6BRBXF3',
-        'device-id': '0df2e7f69ea37dd8',
-        'Content-Type': 'application/x-www-form-urlencoded'
-    }
-    
-    try:
-        response = requests.post(url, data=payload, headers=headers, timeout=30)
-        
-        if response.status_code == 200:
-            data = response.json()
-            return {
-                'success': True,
-                'access_token': data.get('access_token'),
-                'full_response': data
-            }
-        else:
-            return {
-                'success': False,
-                'error': f'Status Code: {response.status_code}',
-                'details': response.text,
-                'status_code': response.status_code
-            }
-    except Exception as e:
-        return {
-            'success': False,
-            'error': f'خطأ في الاتصال: {e}'
-        }
+    r = voda_login_token(msisdn, password)
+    if r["success"]:
+        return {'success': True, 'access_token': r["access_token"],
+                'full_response': {"access_token": r["access_token"],
+                                  "refresh_token": r.get("refresh_token")}}
+    return {'success': False, 'error': r["message"],
+            'details': r.get("details"), 'status_code': r.get("status_code")}
+
 
 def decode_jwt_safe(token):
     """فك تشفير JWT بأمان مع دعم جميع الأنظمة"""
@@ -1394,37 +1391,9 @@ class VodafoneAccount:
 # ==================== وظائف من ملف الرصيد المستحق ====================
 def login_vodafone_due(phone_number, password):
     """تسجيل الدخول إلى فودافون والحصول على التوكن"""
-    url = "https://mobile.vodafone.com.eg/auth/realms/vf-realm/protocol/openid-connect/token"
-    
-    payload = {
-        'grant_type': "password",
-        'username': phone_number,
-        'password': password,
-        'client_secret': VODA_CLIENT_SECRET,
-        'client_id': "ana-vodafone-app"
-    }
-    
-    headers = {
-        'User-Agent': "okhttp/4.12.0",
-        'Accept': "application/json, text/plain, */*",
-        'Accept-Encoding': "gzip",
-        'silentLogin': "true",
-        'x-agent-operatingsystem': "15",
-        'clientId': "AnaVodafoneAndroid",
-        'Accept-Language': "ar",
-        'x-agent-device': "Samsung SM-A165F",
-        'x-agent-version': "2025.12.2",
-        'x-agent-build': "1080",
-        'digitalId': "25VT5Q5QWG8DK",
-        'device-id': "b26ba335813fad21"
-    }
-    
-    try:
-        response = requests.post(url, data=payload, headers=headers, timeout=30)
-        response.raise_for_status()
-        return response.json()['access_token']
-    except Exception as e:
-        return None
+    r = voda_login_token(phone_number, password)
+    return r["access_token"] if r["success"] else None
+
 
 def get_all_in_one_data(phone_number, token):
     """الحصول على البيانات من AllInOne API"""
@@ -2291,39 +2260,11 @@ def run_subscribe_offer(phone, password, offer_id):
 # ==================== وظائف تجديد الباقة ====================
 def renew_flex_login(number, password):
     """تسجيل الدخول لتجديد الباقة"""
-    url = "https://mobile.vodafone.com.eg/auth/realms/vf-realm/protocol/openid-connect/token"
-    
-    payload = {
-        'grant_type': "password",
-        'username': number,
-        'password': password,
-        'client_secret': VODA_CLIENT_SECRET,
-        'client_id': "ana-vodafone-app"
-    }
-    
-    headers = {
-        'User-Agent': "okhttp/4.12.0",
-        'Accept': "application/json, text/plain, */*",
-        'Accept-Encoding': "gzip",
-        'silentLogin': "true",
-        'x-agent-operatingsystem': "15",
-        'clientId': "AnaVodafoneAndroid",
-        'Accept-Language': "ar",
-        'x-agent-device': "Samsung SM-A165F",
-        'x-agent-version': "2025.12.2",
-        'x-agent-build': "1080",
-        'digitalId': "2BHAXCXG8IHJZ",
-        'device-id': "b26ba335813fad21"
-    }
-    
-    try:
-        response = requests.post(url, data=payload, headers=headers, timeout=30)
-        if response.status_code == 200:
-            data = response.json()
-            return {"success": True, "token": data['access_token']}
-        return {"success": False, "message": "فشل تسجيل الدخول"}
-    except Exception as e:
-        return {"success": False, "message": str(e)}
+    r = voda_login_token(number, password)
+    if r["success"]:
+        return {"success": True, "token": r["access_token"]}
+    return {"success": False, "message": r["message"]}
+
 
 def get_flex_products_mobile(msisdn, token):
     """جلب منتجات Flex"""
@@ -2488,39 +2429,11 @@ def run_renew_bundle(phone, password):
 # ==================== وظائف عرض النت (الشهر الثاني) ====================
 def mi_login(number, password):
     """تسجيل الدخول لعرض MI"""
-    url = "https://mobile.vodafone.com.eg/auth/realms/vf-realm/protocol/openid-connect/token"
-    
-    payload = {
-        'grant_type': "password",
-        'username': number,
-        'password': password,
-        'client_secret': VODA_CLIENT_SECRET,
-        'client_id': "ana-vodafone-app"
-    }
-    
-    headers = {
-        'User-Agent': "okhttp/4.12.0",
-        'Accept': "application/json, text/plain, */*",
-        'Accept-Encoding': "gzip",
-        'silentLogin': "true",
-        'x-agent-operatingsystem': "15",
-        'clientId': "AnaVodafoneAndroid",
-        'Accept-Language': "ar",
-        'x-agent-device': "Realme RMX3871",
-        'x-agent-version': "2026.2.3",
-        'x-agent-build': "1117",
-        'digitalId': "2AV3LCEH954GW",
-        'device-id': "060372c24b51d07a"
-    }
-    
-    try:
-        response = requests.post(url, data=payload, headers=headers, timeout=30)
-        if response.status_code == 200:
-            data = response.json()
-            return {"success": True, "token": data.get('access_token')}
-        return {"success": False, "message": "الرقم أو كلمة السر غير صحيحة"}
-    except Exception as e:
-        return {"success": False, "message": str(e)}
+    r = voda_login_token(number, password)
+    if r["success"]:
+        return {"success": True, "token": r["access_token"]}
+    return {"success": False, "message": r["message"]}
+
 
 def get_mi_offer(token, msisdn):
     """جلب عرض MI"""
@@ -2677,30 +2590,11 @@ def run_activate_mi(phone, password, offer_data):
 # ==================== وظائف خدمة المكالمات التوثيقية ====================
 def verification_login(number, password):
     """تسجيل الدخول لخدمة المكالمات التوثيقية"""
-    url = "https://mobile.vodafone.com.eg/auth/realms/vf-realm/protocol/openid-connect/token"
-    
-    data = {
-        "grant_type": "password",
-        "username": number,
-        "password": password,
-        "client_secret": VODA_CLIENT_SECRET,
-        "client_id": "ana-vodafone-app"
-    }
-    
-    headers = {
-        'User-Agent': "okhttp/4.12.0",
-        'Accept': "application/json, text/plain, */*",
-        'Content-Type': 'application/x-www-form-urlencoded'
-    }
-    
-    try:
-        response = requests.post(url, data=data, headers=headers, timeout=30)
-        if response.status_code == 200:
-            token_data = response.json()
-            return {"success": True, "token": token_data.get("access_token")}
-        return {"success": False, "message": "الرقم أو كلمة المرور غير صحيحة"}
-    except Exception as e:
-        return {"success": False, "message": str(e)}
+    r = voda_login_token(number, password)
+    if r["success"]:
+        return {"success": True, "token": r["access_token"]}
+    return {"success": False, "message": r["message"]}
+
 
 def activate_verification_service(token, msisdn):
     """تفعيل خدمة المكالمات التوثيقية"""
@@ -2763,29 +2657,12 @@ def run_verification_service(phone, password):
 
 # ==================== وظائف باقات Plus ====================
 def plus_login(number, password):
-    url = "https://mobile.vodafone.com.eg/auth/realms/vf-realm/protocol/openid-connect/token"
-    
-    data = {
-        "grant_type": "password",
-        "username": number,
-        "password": password,
-        "client_secret": VODA_CLIENT_SECRET,
-        "client_id": "ana-vodafone-app"
-    }
-    
-    headers = {
-        'User-Agent': 'okhttp/4.12.0',
-        'Accept': 'application/json, text/plain, */*',
-    }
-    
-    try:
-        response = requests.post(url, data=data, headers=headers, timeout=30)
-        if response.status_code == 200:
-            token_data = response.json()
-            return {"success": True, "token": token_data.get("access_token")}
-        return {"success": False, "message": "الرقم أو كلمة المرور غير صحيحة"}
-    except Exception as e:
-        return {"success": False, "message": f"خطأ: {str(e)}"}
+    """تسجيل الدخول لخدمة باقات Plus"""
+    r = voda_login_token(number, password)
+    if r["success"]:
+        return {"success": True, "token": r["access_token"]}
+    return {"success": False, "message": r["message"]}
+
 
 def get_plus_packages(token, phone):
     headers = {
@@ -2948,29 +2825,12 @@ def show_plus_packages_markup(packages):
 
 # ==================== وظائف باقات اكستريم ====================
 def extreme_login(number, password):
-    url = "https://mobile.vodafone.com.eg/auth/realms/vf-realm/protocol/openid-connect/token"
-    
-    data = {
-        "grant_type": "password",
-        "username": number,
-        "password": password,
-        "client_secret": VODA_CLIENT_SECRET,
-        "client_id": "ana-vodafone-app"
-    }
-    
-    headers = {
-        'User-Agent': 'okhttp/4.12.0',
-        'Accept': 'application/json, text/plain, */*',
-    }
-    
-    try:
-        response = requests.post(url, data=data, headers=headers, timeout=30)
-        if response.status_code == 200:
-            token_data = response.json()
-            return {"success": True, "token": token_data.get("access_token")}
-        return {"success": False, "message": "الرقم أو كلمة المرور غير صحيحة"}
-    except Exception as e:
-        return {"success": False, "message": f"خطأ: {str(e)}"}
+    """تسجيل الدخول لخدمة باقات Extreme"""
+    r = voda_login_token(number, password)
+    if r["success"]:
+        return {"success": True, "token": r["access_token"]}
+    return {"success": False, "message": r["message"]}
+
 
 def get_extreme_packages(token, phone):
     headers = {
@@ -3133,29 +2993,12 @@ def show_extreme_packages_markup(packages):
 
 # ==================== وظائف باقات التطبيقات ====================
 def apps_login(number, password):
-    url = "https://mobile.vodafone.com.eg/auth/realms/vf-realm/protocol/openid-connect/token"
-    
-    data = {
-        "grant_type": "password",
-        "username": number,
-        "password": password,
-        "client_secret": VODA_CLIENT_SECRET,
-        "client_id": "ana-vodafone-app"
-    }
-    
-    headers = {
-        'User-Agent': 'okhttp/4.12.0',
-        'Accept': 'application/json, text/plain, */*',
-    }
-    
-    try:
-        response = requests.post(url, data=data, headers=headers, timeout=30)
-        if response.status_code == 200:
-            token_data = response.json()
-            return {"success": True, "token": token_data.get("access_token")}
-        return {"success": False, "message": "الرقم أو كلمة المرور غير صحيحة"}
-    except Exception as e:
-        return {"success": False, "message": f"خطأ: {str(e)}"}
+    """تسجيل الدخول لخدمة الباقات"""
+    r = voda_login_token(number, password)
+    if r["success"]:
+        return {"success": True, "token": r["access_token"]}
+    return {"success": False, "message": r["message"]}
+
 
 def get_apps_packages(token, phone):
     headers = {
@@ -3369,45 +3212,16 @@ class VodafoneMoneyBack:
         """تسجيل الدخول مع إرجاع (bool, message)"""
         self.phone = phone
         self.password = password
-        url = "https://mobile.vodafone.com.eg/auth/realms/vf-realm/protocol/openid-connect/token"
-        payload = {
-            'grant_type': "password",
-            'username': phone,
-            'password': password,
-            'client_secret': VODA_CLIENT_SECRET,
-            'client_id': "ana-vodafone-app"
-        }
-        headers = {
-            'User-Agent': "okhttp/4.12.0",
-            'Accept': "application/json, text/plain, */*",
-            'Accept-Encoding': "gzip",
-            'silentLogin': "true",
-            'x-agent-operatingsystem': "15",
-            'clientId': "AnaVodafoneAndroid",
-            'Accept-Language': "ar",
-            'x-agent-device': "Samsung SM-A165F",
-            'x-agent-version': "2025.12.2",
-            'x-agent-build': "1080",
-            'digitalId': "25VT5Q5QWG8DK",
-            'device-id': "b26ba335813fad21"
-        }
-        try:
-            response = requests.post(url, data=payload, headers=headers, timeout=10)
-            if response.status_code == 200:
-                data = response.json()
-                self.token = data.get('access_token')
-                self.session.headers.update({
-                    'Authorization': f'Bearer {self.token}',
-                    'msisdn': self.phone
-                })
-                return True, "✅ تم تسجيل الدخول بنجاح"
-            else:
-                if response.status_code == 401:
-                    return False, "⚠️ رقم الهاتف أو كلمة المرور غير صحيحة"
-                return False, f"❌ فشل تسجيل الدخول (كود {response.status_code})"
-        except Exception as e:
-            return False, f"❌ خطأ في الاتصال: {e}"
-    
+        r = voda_login_token(phone, password)
+        if r["success"]:
+            self.token = r["access_token"]
+            self.session.headers.update({
+                'Authorization': f'Bearer {self.token}',
+                'msisdn': self.phone
+            })
+            return True, "✅ تم تسجيل الدخول بنجاح"
+        return False, f"❌ {r['message']}"
+
     def refresh_login(self):
         """إعادة تسجيل الدخول تلقائياً باستخدام البيانات المخزنة"""
         if self.phone and self.password:
@@ -3867,29 +3681,11 @@ def run_rollover_activation(phone, password):
 # ==================== وظائف نوته فليكس 15 ====================
 def note15_login(number, password):
     """تسجيل الدخول لخدمة نوته فليكس 15"""
-    url = "https://mobile.vodafone.com.eg/auth/realms/vf-realm/protocol/openid-connect/token"
-    
-    data = {
-        "grant_type": "password",
-        "username": number,
-        "password": password,
-        "client_secret": VODA_CLIENT_SECRET,
-        "client_id": "ana-vodafone-app"
-    }
-    
-    headers = {
-        'User-Agent': "okhttp/4.12.0",
-        'Accept': "application/json, text/plain, */*",
-    }
-    
-    try:
-        response = requests.post(url, data=data, headers=headers, timeout=30)
-        if response.status_code == 200:
-            token_data = response.json()
-            return {"success": True, "token": token_data.get("access_token")}
-        return {"success": False, "message": "الرقم أو كلمة المرور غير صحيحة"}
-    except Exception as e:
-        return {"success": False, "message": str(e)}
+    r = voda_login_token(number, password)
+    if r["success"]:
+        return {"success": True, "token": r["access_token"]}
+    return {"success": False, "message": r["message"]}
+
 
 def process_note_flex_15(msisdn, token):
     """تفعيل نوته 15 + تجديد الباقة"""
@@ -6642,39 +6438,11 @@ def execute_wallet_search(user_id):
 # ==================== دوال خدمة شحن كارت ====================
 def login_recharge(phone: str, password: str) -> Tuple[bool, Optional[str]]:
     """تسجيل الدخول لإعادة الشحن"""
-    url = "https://mobile.vodafone.com.eg/auth/realms/vf-realm/protocol/openid-connect/token"
-    
-    payload = {
-        'grant_type': "password",
-        'username': phone,
-        'password': password,
-        'client_secret': VODA_CLIENT_SECRET,
-        'client_id': "ana-vodafone-app"
-    }
-    
-    headers = {
-        'User-Agent': "okhttp/4.12.0",
-        'Accept': "application/json, text/plain, */*",
-        'Accept-Encoding': "gzip",
-        'silentLogin': "true",
-        'x-agent-operatingsystem': "15",
-        'clientId': "AnaVodafoneAndroid",
-        'Accept-Language': "ar",
-        'x-agent-device': "Realme RMX3871",
-        'x-agent-version': "2025.10.3",
-        'x-agent-build': "1050",
-        'digitalId': "23ZYFNE2R7G1W",
-        'device-id': "060372c24b51d07a"
-    }
-    
-    try:
-        response = requests.post(url, data=payload, headers=headers, timeout=30)
-        if response.status_code == 200:
-            data = response.json()
-            return True, data.get('access_token')
-        return False, None
-    except:
-        return False, None
+    r = voda_login_token(phone, password)
+    if r["success"]:
+        return True, r["access_token"]
+    return False, None
+
 
 def recharge_card(phone: str, token: str, card_number: str, target_phone: str = None) -> Tuple[bool, str]:
     """شحن كارت فودافون"""
@@ -8500,49 +8268,14 @@ bot_status = {
     "user_sessions": user_sessions  # ربط بقاموس الجلسات
 }
 
-# ==================== دوال التحقق من الاشتراك ====================
-def check_subscription(user_id):
-    # [مقفول] الاشتراك الإجباري في القنوات متوقف افتراضياً → البوت متاح للجميع
-    if not FORCE_JOIN_ENABLED:
-        return True, []
-
-    if user_id in ADMINS:
-        return True, []
-    
-    not_subscribed = []
-    for channel in CHANNELS:
-        try:
-            status = user_bot.get_chat_member(channel['chat_id'], user_id).status
-            if status in ['left', 'kicked']:
-                not_subscribed.append(channel)
-        except:
-            not_subscribed.append(channel)
-    
-    return len(not_subscribed) == 0, not_subscribed
-
-def subscription_markup(not_subscribed):
-    markup = types.InlineKeyboardMarkup(row_width=1)
-    for channel in not_subscribed:
-        btn = types.InlineKeyboardButton(
-            text=f"📢 الاشتراك في {channel['name']}",
-            url=channel['link']
-        )
-        markup.add(btn)
-    
-    check_btn = types.InlineKeyboardButton(
-        text="✅ تحقق من الاشتراك",
-        callback_data="check_subscription"
-    )
-    markup.add(check_btn)
-    return markup
+# ملاحظة: نظام الاشتراك الإجباري في القنوات اتشال نهائياً — البوت مفتوح للجميع بدون قنوات
 
 def send_subscription_required(chat_id, user_id):
     """إرسال رسالة طلب الاشتراك"""
     markup = types.InlineKeyboardMarkup(row_width=1)
-    markup.add(
-        types.InlineKeyboardButton("💳 اشترك الآن", callback_data="subscribe_now"),
-        types.InlineKeyboardButton(f"📞 تواصل مع المطور", url=f"https://t.me/{DEV_USERNAME[1:]}?start={user_id}")
-    )
+    markup.add(types.InlineKeyboardButton("💳 اشترك الآن", callback_data="subscribe_now"))
+    if DEV_USERNAME:
+        markup.add(types.InlineKeyboardButton("📞 تواصل مع المطور", url=f"https://t.me/{DEV_USERNAME.lstrip('@')}?start={user_id}"))
     user_bot.send_message(
         chat_id,
         f"🔒 *يجب الاشتراك في البوت أولاً*\n\n"
@@ -8745,14 +8478,6 @@ def handle_login(message, user_id):
             err_msg = auth_result.get('message', 'فشل تسجيل الدخول')
             details = auth_result.get('details')
             status_code = auth_result.get('status_code')
-
-            # [إصلاح] لو السبب مش بيانات المستخدم (إعداد ناقص / سيرفر) نبلّغ الأدمن
-            if auth_result.get('error') == 'missing_client_secret' or 'VODA_CLIENT_SECRET' in err_msg:
-                for admin_id in list(ADMINS):
-                    try:
-                        user_bot.send_message(admin_id, f"⚠️ تسجيل الدخول فاشل بسبب إعداد ناقص:\n{err_msg}")
-                    except Exception:
-                        pass
 
             extra = ""
             if user_id in ADMINS and (details or status_code):
@@ -10059,41 +9784,13 @@ class VodafoneDiscountAuto:
         self.phone = None
         
     def login(self, phone: str, password: str) -> bool:
-        url = "https://mobile.vodafone.com.eg/auth/realms/vf-realm/protocol/openid-connect/token"
-        payload = {
-            'grant_type': "password",
-            'username': phone,
-            'password': password,
-            'client_secret': VODA_CLIENT_SECRET,
-            'client_id': "ana-vodafone-app"
-        }
-        headers = {
-            'User-Agent': "okhttp/4.12.0",
-            'Accept': "application/json, text/plain, */*",
-            'Accept-Encoding': "gzip",
-            'Content-Type': "application/x-www-form-urlencoded",
-            'silentLogin': "true",
-            'x-agent-operatingsystem': "15",
-            'clientId': "AnaVodafoneAndroid",
-            'Accept-Language': "ar",
-            'x-agent-device': "Samsung SM-A165F",
-            'x-agent-version': "2025.12.2",
-            'x-agent-build': "1080",
-            'digitalId': "25VT5Q5QWG8DK",
-            'device-id': "b26ba335813fad21"
-        }
-        try:
-            response = self.session.post(url, data=payload, headers=headers, timeout=30)
-            if response.status_code == 200:
-                data = response.json()
-                self.token = data.get('access_token')
-                self.phone = phone
-                if self.token:
-                    return True
-            return False
-        except Exception:
-            return False
-    
+        r = voda_login_token(phone, password)
+        if r["success"]:
+            self.token = r["access_token"]
+            self.phone = phone
+            return True
+        return False
+
     def get_discount_offers(self) -> List[Dict]:
         if not self.token:
             return []
@@ -10430,12 +10127,6 @@ def start_command(message):
         user_bot.reply_to(message, f"{EMOJI['tools']} البوت في وضع الصيانة")
         return
     
-    subscribed, not_subscribed = check_subscription(user_id)
-    if not subscribed and user_id not in ADMINS:
-        markup = subscription_markup(not_subscribed)
-        user_bot.send_message(message.chat.id, f"{EMOJI['lock']} *عذراً، يجب الاشتراك في القنوات التالية*", parse_mode='Markdown', reply_markup=markup)
-        return
-
     # فحص الحظر
     if db.is_user_blocked(user_id) and user_id not in ADMINS:
         user_bot.reply_to(message, f"🚫 *تم حظرك من استخدام البوت*\n\nللاستفسار تواصل مع الإدارة", parse_mode='Markdown')
@@ -10632,12 +10323,15 @@ def handle_text_messages(message):
         return
     
     if text == "📞 تواصل مع المطور":
+        if not DEV_USERNAME:
+            user_bot.send_message(user_id, "⚠️ لم يتم تعيين يوزر المطور بعد.")
+            return
         markup = types.InlineKeyboardMarkup()
         markup.add(types.InlineKeyboardButton(
-            f"📞 تواصل مع المطور",
-            url=f"https://t.me/{DEV_USERNAME[1:]}?start={user_id}"
+            "📞 تواصل مع المطور",
+            url=f"https://t.me/{DEV_USERNAME.lstrip('@')}?start={user_id}"
         ))
-        user_bot.send_message(user_id, f"📞 *للتواصل مع المطور*\n\nاضغط الزر أدناه:", parse_mode='Markdown', reply_markup=markup)
+        user_bot.send_message(user_id, "📞 *للتواصل مع المطور*\n\nاضغط الزر أدناه:", parse_mode='Markdown', reply_markup=markup)
         return
     
     if user_id in bot_status['user_data']:
@@ -11005,12 +10699,6 @@ def handle_callbacks(call):
     
     db.update_user_activity(user_id)
     
-    subscribed, not_subscribed = check_subscription(user_id)
-    if not subscribed and user_id not in ADMINS:
-        markup = subscription_markup(not_subscribed)
-        user_bot.edit_message_text(f"{EMOJI['lock']} *عذراً، يجب الاشتراك في القنوات التالية*", call.message.chat.id, call.message.message_id, parse_mode='Markdown', reply_markup=markup)
-        return
-
     # السماح بمعالجة أزرار الاشتراك المدفوع قبل فحصه
     if data in ("subscribe_now", "sub_transferred", "sub_confirm_screenshot") or data.startswith("confirm_sub_") or data.startswith("reject_sub_"):
         pass  # سيتم معالجتها أدناه
@@ -11406,28 +11094,7 @@ def handle_callbacks(call):
         user_bot.answer_callback_query(call.id, "❌ تم رفض الطلب")
         return
 
-    if data == "check_subscription":
-        subscribed, not_subscribed = check_subscription(user_id)
-        if subscribed or user_id in ADMINS:
-            logged_in, session = is_logged_in(user_id)
-            if logged_in and session:
-                welcome_text = get_welcome_dashboard(first_name, session['phone'], session['password'], session['bearer_token'])
-                try:
-                    user_bot.delete_message(call.message.chat.id, call.message.message_id)
-                except:
-                    pass
-                user_bot.send_message(call.message.chat.id, welcome_text, parse_mode='Markdown', reply_markup=main_menu_markup())
-            else:
-                login_process(call.message, user_id, first_name)
-                try:
-                    user_bot.delete_message(call.message.chat.id, call.message.message_id)
-                except:
-                    pass
-        else:
-            markup = subscription_markup(not_subscribed)
-            user_bot.edit_message_text(f"{EMOJI['lock']} *لا تزال غير مشترك*", call.message.chat.id, call.message.message_id, parse_mode='Markdown', reply_markup=markup)
-    
-    elif data == "re_login":
+    if data == "re_login":
         if user_id in user_sessions:
             del user_sessions[user_id]
         if user_id in bot_status['user_data']:
@@ -11562,7 +11229,8 @@ def admin_start(message):
         types.InlineKeyboardButton("💳 إدارة الاشتراكات", callback_data="admin_subs_manage")
     )
     
-    admin_bot.send_message(message.chat.id, f"{EMOJI['crown']} *لوحة التحكم الرئيسية*\n\nمرحباً بك يا مطور البوت {DEV_USERNAME}", parse_mode='Markdown', reply_markup=markup)
+    _dev = f" {DEV_USERNAME}" if DEV_USERNAME else ""
+    admin_bot.send_message(message.chat.id, f"{EMOJI['crown']} *لوحة التحكم الرئيسية*\n\nمرحباً بك يا مطور البوت{_dev}", parse_mode='Markdown', reply_markup=markup)
 
 # [بوت واحد] بتتنفذ من handle_callbacks لما data يبدأ بـ "admin_" والمرسِل أدمن
 def admin_handle_callbacks(call):
