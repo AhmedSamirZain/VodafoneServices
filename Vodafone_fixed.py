@@ -56,6 +56,7 @@ from config import (
     VODAFONE_CASH_NUMBER,        # رقم فودافون كاش للاستقبال
     SUBSCRIPTION_ENABLED,        # تفعيل/إيقاف نظام الاشتراك (False = مجاني للجميع)
     CHANNELS,                    # القنوات المطلوب الاشتراك فيها
+    FORCE_JOIN_ENABLED,          # تفعيل/إيقاف الاشتراك الإجباري في القنوات (False = مفتوح للجميع)
     DB_FILE,                     # اسم ملف قاعدة البيانات
     DELETE_OLD_DB_ON_START,      # حذف قاعدة البيانات عند الإقلاع (مفروض False)
     VAULT_KEY,                   # مفتاح تشفير كلمات المرور المحفوظة (Fernet)
@@ -8419,6 +8420,10 @@ bot_status = {
 
 # ==================== دوال التحقق من الاشتراك ====================
 def check_subscription(user_id):
+    # [مقفول] الاشتراك الإجباري في القنوات متوقف افتراضياً → البوت متاح للجميع
+    if not FORCE_JOIN_ENABLED:
+        return True, []
+
     if user_id in ADMINS:
         return True, []
     

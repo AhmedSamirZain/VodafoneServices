@@ -151,6 +151,11 @@ VODAFONE_CASH_NUMBER = _get("VODAFONE_CASH_NUMBER", "")              # رقم ا
 SUBSCRIPTION_ENABLED = _get("SUBSCRIPTION_ENABLED", "True").lower() == "true"
 
 # ==================== القنوات المطلوب الاشتراك فيها ====================
+# تفعيل/إيقاف الاشتراك الإجباري في القنوات.
+# الافتراضي الآن False → أي مستخدم يقدر يستخدم البوت من غير ما يشترك في أي قناة.
+# لو عايز ترجّعه تاني حط FORCE_JOIN_ENABLED=True في الـ .env / Secrets.
+FORCE_JOIN_ENABLED = _get("FORCE_JOIN_ENABLED", "False").lower() == "true"
+
 CHANNELS = [
     {"name": "BRSHAMH FLEX15", "link": "https://t.me/BRSHAMH_FLEX15", "chat_id": "@BRSHAMH_FLEX15"},
     {"name": "BRSHAMHFLEX15", "link": "https://t.me/BRSHAMHFLEX15", "chat_id": "@BRSHAMHFLEX15"},
