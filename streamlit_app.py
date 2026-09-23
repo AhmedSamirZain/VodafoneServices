@@ -17,9 +17,10 @@ from datetime import datetime
 import streamlit as st
 
 try:
-    from config import BOT_NAME
+    from config import BOT_NAME, VAULT_KEY_SOURCE
 except Exception:
     BOT_NAME = "VodafoneServices"
+    VAULT_KEY_SOURCE = ""
 
 
 st.set_page_config(page_title=BOT_NAME, page_icon="🤖", layout="centered")
@@ -112,7 +113,8 @@ def _render_telegram_bot_page(core):
     st.caption(
         f"- `BOT_TOKEN`: {'✅ موجود' if bot_token else '⚠️ غير ظاهر باسم BOT_TOKEN داخل الملف'}\n"
         f"- `ADMIN_IDS`: {'✅ ' + str(admin_count) + ' أدمن' if admin_count else '⚠️ غير ظاهر باسم ADMIN_IDS/ADMINS داخل الملف'}"
-        f"{(' — ' + admin_list) if admin_list else ''}"
+        f"{(' — ' + admin_list) if admin_list else ''}\n"
+        f"- `VAULT_KEY`: {VAULT_KEY_SOURCE or '⚠️ غير متاح'}"
     )
 
 
